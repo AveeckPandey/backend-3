@@ -1,0 +1,20 @@
+# Web Server
+fastapi
+uvicorn
+python-multipart
+
+# AI & Machine Learning
+scikit-learn
+pandas
+numpy
+shap
+
+# OCR & Image Processing
+pillow
+pdfplumber
+
+# Integration
+python-dotenv
+httpx
+fpdf2
+google-generativeai
