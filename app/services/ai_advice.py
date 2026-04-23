@@ -1,4 +1,4 @@
-import os
+from app.services.gemini_utils import get_gemini_model
 
 
 def _fallback_summary(patient_name, results, bmi):
@@ -48,16 +48,8 @@ Write exactly 3 concise sentences:
 
 
 def get_ai_medical_summary(patient_name, results, bmi):
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-
-    if not api_key:
-        return _fallback_summary(patient_name, results, bmi)
-
     try:
-        import google.generativeai as genai
-
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = get_gemini_model()
         response = model.generate_content(_build_prompt(patient_name, results, bmi))
         text = getattr(response, "text", "").strip()
         return text if len(text) >= 50 else _fallback_summary(patient_name, results, bmi)

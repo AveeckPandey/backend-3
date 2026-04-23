@@ -53,3 +53,16 @@ class ReportRequest(BaseModel):
 class ReportResponse(BaseModel):
     file_name: str
     download_path: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    patient_name: str | None = None
+    glucose: float | None = None
+    bp_status: str | None = None
+    bmi: float | None = None
+    risk_summary: str | None = None
+
+
+class ChatResponse(BaseModel):
+    reply: str

@@ -5,9 +5,19 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from app.schemas.analysis import AnalysisRequest, AnalysisResponse, ReportRequest, ReportResponse
+from app.schemas.analysis import (
+    AnalysisRequest,
+    AnalysisResponse,
+    ChatRequest,
+    ChatResponse,
+    ReportRequest,
+    ReportResponse,
+)
 from app.services.ai_advice import get_ai_medical_summary
+from app.services.chat_service import chat_about_health
+from app.services.gemini_utils import TokenLimitError
 from app.services.health_utils import calculate_bmi, get_bp_category
+from app.services.image_extraction_service import extract_from_image
 from app.services.ocr_service import extract_from_pdf
 from app.services.report_generator import REPORT_DIR, generate_pdf_report
 from app.services.xai_service import get_comprehensive_report
@@ -89,6 +99,34 @@ async def extract_report(file: UploadFile = File(...)):
     }
 
 
+@app.post("/extract-image-report")
+async def extract_image_report(file: UploadFile = File(...)):
+    if file.content_type not in {"image/jpeg", "image/jpg", "image/png", "application/octet-stream"}:
+        raise HTTPException(status_code=400, detail="Please upload a JPG or PNG report image.")
+
+    suffix = os.path.splitext(file.filename or "")[1] or ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        extracted = extract_from_image(tmp_path)
+    except TokenLimitError as error:
+        raise HTTPException(status_code=429, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail=f"Unable to read report image. {error}")
+    finally:
+        os.unlink(tmp_path)
+
+    return {
+        "name": extracted.get("name") or "",
+        "age": extracted.get("age"),
+        "gender": extracted.get("gender"),
+        "glucose": extracted.get("glucose"),
+        "file_name": file.filename,
+    }
+
+
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_health(data: AnalysisRequest):
     bmi        = calculate_bmi(data.weight_kg, data.height_cm)
@@ -111,6 +149,26 @@ async def analyze_health(data: AnalysisRequest):
         "risk_factors":       stroke.get("top_factors", [])[:4],
         "results":            report,
     }
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(data: ChatRequest):
+    if not data.message.strip():
+        raise HTTPException(status_code=400, detail="Please enter a message.")
+
+    try:
+        reply = chat_about_health(data)
+    except TokenLimitError as error:
+        raise HTTPException(status_code=429, detail=str(error))
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Chat assistant is unavailable right now. Please try again in a moment.",
+        )
+
+    return {"reply": reply}
 
 
 @app.post("/generate-report", response_model=ReportResponse)
