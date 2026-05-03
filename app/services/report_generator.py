@@ -100,6 +100,12 @@ def _format_flags(label_map: list[tuple[str, object]]) -> str:
     return ", ".join(selected) if selected else "None reported"
 
 
+def _flag_value(data: dict, input_summary: dict, key: str) -> object:
+    if key in input_summary and input_summary.get(key) is not None:
+        return input_summary.get(key)
+    return data.get(key)
+
+
 def generate_pdf_report(data: dict) -> Path:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -145,17 +151,17 @@ def generate_pdf_report(data: dict) -> Path:
     )
     family_history = _format_flags(
         [
-            ("Diabetes", input_summary.get("family_history_diabetes")),
-            ("Hypertension", input_summary.get("family_history_hypertension")),
-            ("Stroke", input_summary.get("family_history_stroke")),
+            ("Diabetes", _flag_value(data, input_summary, "family_history_diabetes")),
+            ("Hypertension", _flag_value(data, input_summary, "family_history_hypertension")),
+            ("Stroke", _flag_value(data, input_summary, "family_history_stroke")),
         ]
     )
     existing_conditions = _format_flags(
         [
-            ("Heart Disease", input_summary.get("has_heart_disease")),
-            ("Diabetes", input_summary.get("has_diabetes_history")),
-            ("Hypertension", input_summary.get("has_hypertension_history")),
-            ("Stroke", input_summary.get("had_stroke_history")),
+            ("Heart Disease", _flag_value(data, input_summary, "has_heart_disease")),
+            ("Diabetes", _flag_value(data, input_summary, "has_diabetes_history")),
+            ("Hypertension", _flag_value(data, input_summary, "has_hypertension_history")),
+            ("Stroke", _flag_value(data, input_summary, "had_stroke_history")),
         ]
     )
     pdf.set_font("Helvetica", "", 11)

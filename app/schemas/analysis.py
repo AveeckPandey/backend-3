@@ -39,6 +39,17 @@ class AnalysisResponse(BaseModel):
     bp_status: str
     diabetes_risk: str
     stroke_probability: float
+    physical_activity_level: str
+    salt_intake_level: str
+    sleep_duration: float
+    stress_score: int
+    had_stroke_history: bool = False
+    has_heart_disease: bool = False
+    has_diabetes_history: bool = False
+    has_hypertension_history: bool = False
+    family_history_diabetes: bool = False
+    family_history_hypertension: bool = False
+    family_history_stroke: bool = False
     ai_recommendation: str
     # SHAP Data (Features that impacted the score)
     top_risk_factors: list[dict]
@@ -63,6 +74,13 @@ class ReportRequest(BaseModel):
     salt_intake_level: str | None = None
     sleep_duration: float | None = None
     stress_score: int | None = None
+    had_stroke_history: bool = False
+    has_heart_disease: bool = False
+    has_diabetes_history: bool = False
+    has_hypertension_history: bool = False
+    family_history_diabetes: bool = False
+    family_history_hypertension: bool = False
+    family_history_stroke: bool = False
     input_summary: dict[str, Any] | None = None
     processing_notes: list[str] = Field(default_factory=list)
     results: dict[str, Any]
