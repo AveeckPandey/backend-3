@@ -4,7 +4,7 @@ uvicorn
 python-multipart
 
 # AI & Machine Learning
-scikit-learn
+scikit-learn==1.6.1
 pandas
 numpy
 shap

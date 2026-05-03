@@ -13,10 +13,11 @@ from app.schemas.analysis import (
     ReportRequest,
     ReportResponse,
 )
+from app.services.analysis_processing import normalize_analysis_inputs
 from app.services.ai_advice import get_ai_medical_summary
 from app.services.chat_service import chat_about_health
 from app.services.gemini_utils import TokenLimitError
-from app.services.health_utils import calculate_bmi, get_bp_category
+from app.services.health_utils import get_bp_category, is_hypertensive
 from app.services.image_extraction_service import extract_from_image
 from app.services.ocr_service import extract_from_pdf
 from app.services.report_generator import REPORT_DIR, generate_pdf_report
@@ -32,42 +33,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-def _salt_intake_score(level: str) -> int:
-    normalized = level.strip().lower()
-    if normalized == "low":
-        return 3
-    if normalized == "high":
-        return 8
-    return 5
-
-
-def _build_feature_set(data: AnalysisRequest, bmi: float) -> dict:
+def _build_feature_set(normalized: dict) -> dict:
     return {
-        "age":               data.age,
-        "avg_glucose_level": data.glucose,
-        "Glucose":           data.glucose,
-        "Age":               data.age,
-        "BloodPressure":     data.systolic_bp,
-        "bmi":               bmi,
-        "BMI":               bmi,
-        "gender":            1 if data.gender == "Male" else 0,
-        "smoking_status":    1 if data.is_smoker else 0,
-        "hypertension":      1 if (data.systolic_bp >= 130 or data.diastolic_bp >= 80) else 0,
-        "heart_disease":     1 if data.has_heart_disease else 0,
-        "systolic_bp":       data.systolic_bp,
-        "diastolic_bp":      data.diastolic_bp,
-        "is_smoker":         data.is_smoker,
-        "Salt_Intake":       _salt_intake_score(data.salt_intake_level),
-        "Stress_Score":      data.stress_score,
-        "Sleep_Duration":    data.sleep_duration,
-        "family_history_diabetes":      data.family_history_diabetes,
-        "family_history_hypertension":  data.family_history_hypertension,
-        "family_history_stroke":        data.family_history_stroke,
-        "physical_activity_level":      data.physical_activity_level,
-        "has_diabetes_history":         data.has_diabetes_history,
-        "has_hypertension_history":     data.has_hypertension_history,
-        "had_stroke_history":           data.had_stroke_history,
+        "age": normalized["age"],
+        "avg_glucose_level": normalized["glucose"],
+        "Glucose": normalized["glucose"],
+        "Age": normalized["age"],
+        "BloodPressure": normalized["systolic_bp"],
+        "bmi": normalized["bmi"],
+        "BMI": normalized["bmi"],
+        "gender": normalized["gender"],
+        "smoking_status": 1 if normalized["is_smoker"] else 0,
+        "hypertension": 1 if is_hypertensive(normalized["bp_status"]) else 0,
+        "heart_disease": 1 if normalized["has_heart_disease"] else 0,
+        "systolic_bp": normalized["systolic_bp"],
+        "diastolic_bp": normalized["diastolic_bp"],
+        "bp_status": normalized["bp_status"],
+        "is_smoker": normalized["is_smoker"],
+        "Salt_Intake": normalized["salt_intake_score"],
+        "Stress_Score": normalized["stress_score"],
+        "Sleep_Duration": normalized["sleep_duration"],
+        "physical_activity_score": normalized["physical_activity_score"],
+        "family_history_diabetes": normalized["family_history_diabetes"],
+        "family_history_hypertension": normalized["family_history_hypertension"],
+        "family_history_stroke": normalized["family_history_stroke"],
+        "physical_activity_level": normalized["physical_activity_level"],
+        "salt_intake_level": normalized["salt_intake_level"],
+        "has_diabetes_history": normalized["has_diabetes_history"],
+        "has_hypertension_history": normalized["has_hypertension_history"],
+        "had_stroke_history": normalized["had_stroke_history"],
     }
 
 @app.get("/health")
@@ -129,25 +123,26 @@ async def extract_image_report(file: UploadFile = File(...)):
 
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_health(data: AnalysisRequest):
-    bmi        = calculate_bmi(data.weight_kg, data.height_cm)
-    bp_status  = get_bp_category(data.systolic_bp, data.diastolic_bp)
-    features   = _build_feature_set(data, bmi)
-    report     = get_comprehensive_report(features)
-    ai_summary = get_ai_medical_summary(data.name, report, bmi)
+    normalized = normalize_analysis_inputs(data.model_dump())
+    features = _build_feature_set(normalized)
+    report = get_comprehensive_report(features)
+    ai_summary = get_ai_medical_summary(normalized["name"], report, normalized["bmi"])
 
-    stroke     = report.get("stroke",       {})
-    diabetes   = report.get("diabetes",     {})
+    stroke = report.get("stroke", {})
+    diabetes = report.get("diabetes", {})
 
     return {
-        "name":               data.name,
-        "bmi":                bmi,
-        "bp_status":          bp_status,
-        "diabetes_risk":      "High" if diabetes.get("probability", 0) >= 0.5 else "Normal",
+        "name": normalized["name"],
+        "bmi": normalized["bmi"],
+        "bp_status": normalized["bp_status"],
+        "diabetes_risk": "High" if diabetes.get("probability", 0) >= 0.5 else "Normal",
         "stroke_probability": stroke.get("probability", 0.0),
-        "ai_recommendation":  ai_summary,
-        "top_risk_factors":   stroke.get("top_factors", [])[:4],
-        "risk_factors":       stroke.get("top_factors", [])[:4],
-        "results":            report,
+        "ai_recommendation": ai_summary,
+        "top_risk_factors": stroke.get("top_factors", [])[:4],
+        "risk_factors": stroke.get("top_factors", [])[:4],
+        "input_summary": normalized["input_summary"],
+        "processing_notes": normalized["processing_notes"],
+        "results": report,
     }
 
 
@@ -173,7 +168,10 @@ async def chat(data: ChatRequest):
 
 @app.post("/generate-report", response_model=ReportResponse)
 async def generate_report(data: ReportRequest):
-    path = generate_pdf_report(data.model_dump())
+    payload = data.model_dump()
+    if not payload.get("bp_status") and payload.get("systolic_bp") is not None and payload.get("diastolic_bp") is not None:
+        payload["bp_status"] = get_bp_category(payload.get("systolic_bp"), payload.get("diastolic_bp"))
+    path = generate_pdf_report(payload)
     return {
         "file_name": path.name,
         "download_path": f"/reports/{path.name}",

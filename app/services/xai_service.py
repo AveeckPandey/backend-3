@@ -7,6 +7,8 @@ import shap
 from pathlib import Path
 from sklearn.exceptions import NotFittedError
 
+from app.services.health_utils import get_bp_category
+
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
 
 # Load models
@@ -59,6 +61,8 @@ def _feature_value(feature_set, name):
     if name in feature_set:
         return feature_set[name]
 
+    gender = str(feature_set.get("gender", "")).strip().lower()
+
     defaults = {
         "Pregnancies": 0,
         "SkinThickness": 0,
@@ -68,8 +72,8 @@ def _feature_value(feature_set, name):
         "Stress_Score": 5,
         "Sleep_Duration": 7,
         "heart_disease": 0,
-        "gender_Male": 1 if feature_set.get("gender") == 1 else 0,
-        "gender_Other": 0,
+        "gender_Male": 1 if gender == "male" else 0,
+        "gender_Other": 1 if gender == "other" else 0,
         "ever_married_Yes": 1 if feature_set.get("age", 0) >= 18 else 0,
         "work_type_Never_worked": 0,
         "work_type_Private": 1,
@@ -205,7 +209,7 @@ def _top_factors_from_shap(model, df):
             "value": value,
         })
 
-    return sorted(influences, key=lambda x: abs(x["influence"]), reverse=True)[:3]
+    return sorted(influences, key=lambda x: abs(x["influence"]), reverse=True)
 
 
 def _top_factors_from_coefficients(model, df):
@@ -217,63 +221,133 @@ def _top_factors_from_coefficients(model, df):
     influences = []
     for i, name in enumerate(df.columns):
         value = float(df.iloc[0, i])
+        baseline = _baseline_value(name)
         influences.append({
             "feature": name.replace("_", " ").replace("avg ", "").title(),
-            "influence": _safe_number(weights[i] * value),
+            "influence": _safe_number(weights[i] * (value - baseline)),
             "value": value,
         })
-    return sorted(influences, key=lambda x: abs(x["influence"]), reverse=True)[:3]
+    return sorted(influences, key=lambda x: abs(x["influence"]), reverse=True)
 
 
-def _hypertension_fallback(feature_set):
+def _split_factor_directions(factors, threshold=0.05):
+    risk_factors = [factor for factor in factors if factor.get("influence", 0) > threshold]
+    protective_factors = [factor for factor in factors if factor.get("influence", 0) < -threshold]
+    return risk_factors[:3], protective_factors[:2]
+
+
+def _hypertension_assessment(feature_set):
     systolic = feature_set.get("systolic_bp", 0)
     diastolic = feature_set.get("diastolic_bp", 0)
-    if systolic >= 140 or diastolic >= 90:
-        probability = 0.8
-    elif systolic >= 130 or diastolic >= 80:
-        probability = 0.6
-    elif systolic >= 120:
-        probability = 0.35
-    else:
-        probability = 0.15
+    bp_status = feature_set.get("bp_status") or get_bp_category(systolic, diastolic)
 
-    top_factors = [
-        {"feature": "Systolic Blood Pressure", "influence": _safe_number(round(systolic / 180, 2)), "value": _safe_number(systolic)},
-        {"feature": "Diastolic Blood Pressure", "influence": _safe_number(round(diastolic / 120, 2)), "value": _safe_number(diastolic)},
-        {"feature": "BMI", "influence": _safe_number(round(feature_set.get("bmi", 0) / 50, 2)), "value": _safe_number(feature_set.get("bmi", 0))},
+    probability = {
+        "Normal": 0.08,
+        "Elevated": 0.22,
+        "Hypertension Stage 1": 0.48,
+        "Hypertension Stage 2": 0.78,
+        "Hypertensive Crisis": 0.97,
+    }.get(bp_status, 0.2)
+
+    bmi = _safe_number(feature_set.get("bmi", 0))
+    salt_score = _safe_number(feature_set.get("Salt_Intake", 5))
+    stress_score = _safe_number(feature_set.get("Stress_Score", 5))
+    sleep_duration = _safe_number(feature_set.get("Sleep_Duration", 7))
+    activity_score = _safe_number(feature_set.get("physical_activity_score", 5))
+
+    if feature_set.get("family_history_hypertension"):
+        probability += 0.05
+    if feature_set.get("has_hypertension_history"):
+        probability += 0.08
+    if feature_set.get("is_smoker"):
+        probability += 0.04
+    if bmi >= 30:
+        probability += 0.06
+    elif bmi >= 25:
+        probability += 0.03
+    if salt_score >= 8:
+        probability += 0.05
+    elif salt_score <= 3:
+        probability -= 0.03
+    if stress_score >= 8:
+        probability += 0.04
+    elif stress_score <= 3:
+        probability -= 0.02
+    if sleep_duration < 6:
+        probability += 0.03
+    elif sleep_duration >= 8:
+        probability -= 0.02
+    if activity_score >= 8:
+        probability -= 0.03
+    elif activity_score <= 3:
+        probability += 0.02
+
+    probability = max(0.02, min(0.99, probability))
+
+    all_factors = [
+        {"feature": "Systolic Blood Pressure", "influence": _safe_number(round((systolic - 118) / 35, 3)), "value": _safe_number(systolic)},
+        {"feature": "Diastolic Blood Pressure", "influence": _safe_number(round((diastolic - 76) / 20, 3)), "value": _safe_number(diastolic)},
+        {"feature": "BMI", "influence": _safe_number(round((bmi - 25) / 10, 3)), "value": bmi},
+        {"feature": "Salt Intake", "influence": _safe_number(round((salt_score - 5) / 10, 3)), "value": salt_score},
+        {"feature": "Stress Score", "influence": _safe_number(round((stress_score - 5) / 10, 3)), "value": stress_score},
+        {"feature": "Sleep Duration", "influence": _safe_number(round((7 - sleep_duration) / 8, 3)), "value": sleep_duration},
+        {"feature": "Physical Activity", "influence": _safe_number(round((5 - activity_score) / 10, 3)), "value": activity_score},
     ]
+    if feature_set.get("family_history_hypertension"):
+        all_factors.append({"feature": "Family History Hypertension", "influence": 0.18, "value": 1})
+    if feature_set.get("has_hypertension_history"):
+        all_factors.append({"feature": "Previous Hypertension", "influence": 0.22, "value": 1})
+    if feature_set.get("is_smoker"):
+        all_factors.append({"feature": "Smoking Status Smokes", "influence": 0.14, "value": 1})
+
+    ordered_factors = sorted(all_factors, key=lambda x: abs(x["influence"]), reverse=True)
+    top_factors, protective_factors = _split_factor_directions(ordered_factors, threshold=0.04)
 
     return {
         "probability": probability,
-        "justification": get_risk_justification("hypertension", probability, top_factors),
-        "top_factors": top_factors,
+        "classification": bp_status,
+        "justification": get_risk_justification("hypertension", probability, top_factors, protective_factors),
+        "top_factors": top_factors or ordered_factors[:3],
+        "protective_factors": protective_factors,
     }
 
-def get_risk_justification(model_key, prob, top_factors):
+
+def get_risk_justification(model_key, prob, top_factors, protective_factors):
     """Generates a natural language explanation based on SHAP impact."""
-    
-    # Filter factors that significantly pushed the risk UP
-    reasons = [f['feature'].lower() for f in top_factors if f['influence'] > 0.05]
-    
+
+    reasons = [f["feature"].lower() for f in top_factors if f["influence"] > 0.05]
+    protective_reasons = [f["feature"].lower() for f in protective_factors if f["influence"] < -0.05]
+
     if prob < 0.25:
+        if protective_reasons:
+            if len(protective_reasons) > 1:
+                protective_text = ", ".join(protective_reasons[:-1]) + ", and " + protective_reasons[-1]
+            else:
+                protective_text = protective_reasons[0]
+            return (
+                f"Your {model_key} risk is low. Supportive factors such as {protective_text} "
+                f"are helping keep this risk down."
+            )
         return f"Your {model_key} risk is low. Your vitals are within a healthy range."
-    
-    # Constructing the sentence
+
     base_text = f"Your {model_key} risk is elevated"
     if reasons:
-        # Formats as: "due to high glucose level, advanced age, and smoking status"
         if len(reasons) > 1:
             reason_str = ", ".join(reasons[:-1]) + ", and " + reasons[-1]
         else:
             reason_str = reasons[0]
         return f"{base_text} primarily due to {reason_str}."
-    
+
     return f"{base_text} due to a combination of physiological factors."
 
 def get_comprehensive_report(feature_set):
     report = {}
 
     for key, model in models.items():
+        if key == "hypertension":
+            report[key] = _hypertension_assessment(feature_set)
+            continue
+
         try:
             df = _build_model_frame(key, model, feature_set)
             if df.empty:
@@ -281,20 +355,19 @@ def get_comprehensive_report(feature_set):
 
             prob = _safe_number(model.predict_proba(df)[0][1])
             try:
-                top_factors = _top_factors_from_shap(model, df)
+                all_factors = _top_factors_from_shap(model, df)
             except ValueError:
-                top_factors = _top_factors_from_coefficients(model, df)
-            justification = get_risk_justification(key, prob, top_factors)
+                all_factors = _top_factors_from_coefficients(model, df)
+            top_factors, protective_factors = _split_factor_directions(all_factors)
+            justification = get_risk_justification(key, prob, top_factors, protective_factors)
         except NotFittedError:
-            if key == "hypertension":
-                report[key] = _hypertension_fallback(feature_set)
-                continue
             raise
         
         report[key] = {
             "probability": round(float(prob), 2),
             "justification": justification,
-            "top_factors": top_factors
+            "top_factors": top_factors or all_factors[:3],
+            "protective_factors": protective_factors,
         }
     
     return report

@@ -4,6 +4,8 @@ from pathlib import Path
 
 from fpdf import FPDF
 
+from app.services.health_utils import get_bp_category
+
 REPORT_DIR = Path(__file__).resolve().parents[2] / "reports"
 
 
@@ -31,13 +33,14 @@ def _safe_file_name(name: str) -> str:
 class HealthReport(FPDF):
     def header(self):
         self.set_fill_color(37, 99, 235)
-        self.rect(0, 0, 210, 24, "F")
+        self.rect(0, 0, 210, 26, "F")
         self.set_text_color(255, 255, 255)
+        self.set_y(6)
         self.set_font("Helvetica", "B", 15)
-        self.cell(0, 12, "Personalized AI Health Assessment", 0, 1, "C")
+        self.cell(0, 8, "Personalized AI Health Assessment", 0, 1, "C")
         self.set_font("Helvetica", "", 9)
         self.cell(0, 5, "AI-assisted screening report for clinical review", 0, 1, "C")
-        self.ln(10)
+        self.ln(6)
 
     def footer(self):
         self.set_y(-18)
@@ -56,6 +59,7 @@ def _section_title(pdf: FPDF, title: str):
     pdf.set_text_color(15, 23, 42)
     pdf.set_font("Helvetica", "B", 12)
     pdf.set_fill_color(241, 245, 249)
+    pdf.set_x(pdf.l_margin)
     pdf.cell(0, 9, _clean_text(title), 0, 1, "L", True)
     pdf.ln(2)
 
@@ -68,35 +72,140 @@ def _risk_label(probability: float) -> str:
     return "Low"
 
 
+def _write_line(pdf: FPDF, text: str, height: int = 6):
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(0, height, _clean_text(text))
+
+
+def _render_factor_list(pdf: FPDF, title: str, factors: list[dict]):
+    if not factors:
+        return
+
+    pdf.set_font("Helvetica", "B", 9)
+    _write_line(pdf, title, 5)
+    pdf.set_font("Helvetica", "", 9)
+    for factor in factors:
+        _write_line(
+            pdf,
+            (
+                f"- {factor.get('feature', 'Unknown')}: value {factor.get('value', '--')}, "
+                f"influence {round(float(factor.get('influence', 0) or 0), 3)}"
+            ),
+            5,
+        )
+
+
+def _format_flags(label_map: list[tuple[str, object]]) -> str:
+    selected = [label for label, enabled in label_map if enabled]
+    return ", ".join(selected) if selected else "None reported"
+
+
 def generate_pdf_report(data: dict) -> Path:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     pdf = HealthReport()
+    pdf.set_margins(12, 18, 12)
     pdf.set_auto_page_break(auto=True, margin=22)
     pdf.add_page()
 
     pdf.set_text_color(15, 23, 42)
     _section_title(pdf, "Patient Data")
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 7, _clean_text(f"Name: {data.get('name', 'Patient')}"), 0, 1)
-    pdf.cell(
-        0,
-        7,
-        _clean_text(
-            f"Age: {data.get('age', '--')} | Gender: {data.get('gender', '--')} | "
-            f"BMI: {data.get('bmi', '--')} | Glucose: {data.get('glucose', '--')} mg/dL"
-        ),
-        0,
-        1,
+    input_summary = data.get("input_summary") or {}
+    systolic_bp = input_summary.get("systolic_bp", data.get("systolic_bp"))
+    diastolic_bp = input_summary.get("diastolic_bp", data.get("diastolic_bp"))
+    bp_status = (
+        input_summary.get("bp_status")
+        or data.get("bp_status")
+        or get_bp_category(systolic_bp, diastolic_bp)
     )
-    pdf.cell(0, 7, _clean_text(f"Blood Pressure Status: {data.get('bp_status', '--')}"), 0, 1)
-    pdf.cell(0, 7, _clean_text(f"Generated: {datetime.now().strftime('%d %b %Y, %I:%M %p')}"), 0, 1)
+    report_name = data.get("name") or input_summary.get("name") or "Patient"
+    report_age = data.get("age") if data.get("age") is not None else input_summary.get("age", "--")
+    report_gender = data.get("gender") if data.get("gender") is not None else input_summary.get("gender", "--")
+    report_bmi = data.get("bmi") if data.get("bmi") is not None else input_summary.get("bmi", "--")
+    report_glucose = data.get("glucose") if data.get("glucose") is not None else input_summary.get("glucose_mg_dl", "--")
+    report_activity = (
+        data.get("physical_activity_level")
+        if data.get("physical_activity_level") is not None
+        else input_summary.get("physical_activity_level", "--")
+    )
+    report_salt = (
+        data.get("salt_intake_level")
+        if data.get("salt_intake_level") is not None
+        else input_summary.get("salt_intake_level", "--")
+    )
+    report_sleep = (
+        data.get("sleep_duration")
+        if data.get("sleep_duration") is not None
+        else input_summary.get("sleep_duration", "--")
+    )
+    report_stress = (
+        data.get("stress_score")
+        if data.get("stress_score") is not None
+        else input_summary.get("stress_score", "--")
+    )
+    family_history = _format_flags(
+        [
+            ("Diabetes", input_summary.get("family_history_diabetes")),
+            ("Hypertension", input_summary.get("family_history_hypertension")),
+            ("Stroke", input_summary.get("family_history_stroke")),
+        ]
+    )
+    existing_conditions = _format_flags(
+        [
+            ("Heart Disease", input_summary.get("has_heart_disease")),
+            ("Diabetes", input_summary.get("has_diabetes_history")),
+            ("Hypertension", input_summary.get("has_hypertension_history")),
+            ("Stroke", input_summary.get("had_stroke_history")),
+        ]
+    )
+    pdf.set_font("Helvetica", "", 11)
+    _write_line(pdf, f"Name: {report_name}", 7)
+    _write_line(
+        pdf,
+        (
+            f"Age: {report_age} | Gender: {report_gender} | "
+            f"BMI: {report_bmi} | Glucose: {report_glucose} mg/dL"
+        ),
+        7,
+    )
+    if systolic_bp is not None and diastolic_bp is not None:
+        _write_line(pdf, f"Blood Pressure Reading: {systolic_bp}/{diastolic_bp} mmHg", 7)
+    _write_line(pdf, f"Blood Pressure Status: {bp_status or '--'}", 7)
+    if input_summary.get("weight_kg") is not None or input_summary.get("height_cm") is not None:
+        _write_line(
+            pdf,
+            (
+                f"Weight: {input_summary.get('weight_kg', '--')} kg | "
+                f"Height: {input_summary.get('height_cm', '--')} cm"
+            ),
+            7,
+        )
+    _write_line(
+        pdf,
+        (
+            f"Physical Activity: {report_activity} | Salt Intake: {report_salt} | "
+            f"Sleep: {report_sleep} hours | Stress Score: {report_stress}"
+        ),
+        7,
+    )
+    _write_line(pdf, f"Family History: {family_history}", 7)
+    _write_line(pdf, f"Existing Conditions: {existing_conditions}", 7)
+    _write_line(pdf, f"Generated: {datetime.now().strftime('%d %b %Y, %I:%M %p')}", 7)
     pdf.ln(4)
+
+    processing_notes = data.get("processing_notes", [])
+    if processing_notes:
+        _section_title(pdf, "Input Quality Notes")
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(71, 85, 105)
+        for note in processing_notes:
+            _write_line(pdf, f"- {note}", 6)
+        pdf.ln(3)
 
     _section_title(pdf, "Clinical Insight (AI Generated)")
     pdf.set_font("Helvetica", "I", 11)
     pdf.set_text_color(51, 65, 85)
-    pdf.multi_cell(0, 7, _clean_text(data.get("ai_recommendation", "No AI summary available.")))
+    _write_line(pdf, data.get("ai_recommendation", "No AI summary available."), 7)
     pdf.ln(4)
 
     _section_title(pdf, "Diagnostic Risk Scores")
@@ -107,31 +216,23 @@ def generate_pdf_report(data: dict) -> Path:
 
         pdf.set_font("Helvetica", "B", 11)
         pdf.set_text_color(15, 23, 42)
-        pdf.cell(0, 8, _clean_text(f"{key.title()} Risk: {prob_percent} ({risk_label})"), 0, 1)
+        heading = f"{key.title()} Risk: {prob_percent} ({risk_label})"
+        if key == "hypertension" and result.get("classification"):
+            heading += f" - {result.get('classification')}"
+        _write_line(pdf, heading, 8)
 
         pdf.set_font("Helvetica", "", 10)
         pdf.set_text_color(71, 85, 105)
-        pdf.multi_cell(0, 6, _clean_text(f"Justification: {result.get('justification', 'Not available.')}"))
+        _write_line(pdf, f"Justification: {result.get('justification', 'Not available.')}", 6)
 
         top_factors = result.get("top_factors", [])[:3]
-        if top_factors:
-            pdf.set_font("Helvetica", "B", 9)
-            pdf.cell(0, 6, "Top contributing factors:", 0, 1)
-            pdf.set_font("Helvetica", "", 9)
-            for factor in top_factors:
-                pdf.cell(
-                    0,
-                    5,
-                    _clean_text(
-                        f"- {factor.get('feature', 'Unknown')}: value {factor.get('value', '--')}, "
-                        f"influence {round(float(factor.get('influence', 0) or 0), 3)}"
-                    ),
-                    0,
-                    1,
-                )
+        _render_factor_list(pdf, "Top contributing factors:", top_factors)
+
+        protective_factors = result.get("protective_factors", [])[:2]
+        _render_factor_list(pdf, "Protective factors:", protective_factors)
         pdf.ln(3)
 
-    file_name = f"{_safe_file_name(data.get('name', 'patient'))}_health_report.pdf"
+    file_name = f"{_safe_file_name(report_name)}_health_report.pdf"
     path = REPORT_DIR / file_name
     pdf.output(path)
     return path
